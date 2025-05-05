@@ -1,9 +1,3 @@
-# Create a separate file named `config.py` alongside this script with:
-#
-# OPENAI_API_KEY = "sk-<YOUR_API_KEY_HERE>"
-#
-# Then your main script can import the key without hardcoding.
-
 import openai
 import gradio as gr
 import requests
@@ -29,56 +23,23 @@ def fetch_agent_wiki(agent_name):
     Fallback: fetch summary from Wikipedia for an agent.
     """
     try:
-        search_params = {
-            'action': 'query', 'list': 'search',
-            'srsearch': f"{agent_name} Valorant agent",
-            'format': 'json', 'srlimit': 1
-        }
-        r = requests.get(WIKI_API_URL, params=search_params, timeout=5)
-        r.raise_for_status()
-        results = r.json().get('query', {}).get('search', [])
-        if not results:
-            return None
-        pageid = results[0]['pageid']
-        extract_params = {
-            'action': 'query', 'prop': 'extracts',
-            'exintro': True, 'explaintext': True,
-            'pageids': pageid, 'format': 'json'
-        }
-        r2 = requests.get(WIKI_API_URL, params=extract_params, timeout=5)
-        r2.raise_for_status()
-        pages = r2.json().get('query', {}).get('pages', {})
-        extract = pages.get(str(pageid), {}).get('extract', '')
-        return extract.split('\n')[0] if extract else None
+        res = requests.get(
+            WIKI_API_URL,
+            params={
+                "action": "query",
+                "prop": "extracts",
+                "exintro": True,
+                "format": "json",
+                "titles": agent_name
+            }
+        ).json()
+        page = next(iter(res["query"]["pages"].values()))
+        return page.get("extract", "")
     except Exception:
-        return None
+        return ""
 
 
-def fetch_agent_data(agent_name):
-    """
-    Fetches agent role and description from the Valorant API, falls back to Wikipedia.
-    Returns dict or None.
-    """
-    try:
-        resp = requests.get(VALORANT_AGENTS_API, timeout=5)
-        resp.raise_for_status()
-        for agent in resp.json().get("data", []):
-            if agent.get("displayName", "").lower() == agent_name.lower():
-                role = agent.get("role", {}).get("displayName", "Unknown role")
-                desc = agent.get("description", "No description available.")
-                return {"role": role, "description": desc}
-    except Exception:
-        pass
-    summary = fetch_agent_wiki(agent_name)
-    if summary:
-        return {"role": "Unknown role", "description": summary}
-    return None
-
-
-def generate_valorant_strategy(messages, model="gpt-3.5-turbo"):
-    """
-    Sends a list of messages to ChatGPT and returns the content.
-    """
+def generate_valorant_strategy(messages, model="gpt-4"):
     try:
         res = openai.ChatCompletion.create(
             model=model,
@@ -96,65 +57,52 @@ def on_click_strategy(map_choice, side_choice, round_goal, site_choice,
     """
     Builds the prompt, fetches agent info (API + fallback), and generates a strategy.
     """
+    # Fetch agent list or auto-generate composition
     if auto_comp:
-        comp_prompt = (
-            f"For VALORANT map '{map_choice}' at {site_choice} site, propose a balanced team of five agents, at least one Controller. "
-            "List only the agent names separated by commas."
-        )
-        comp = generate_valorant_strategy([
+        prompt = [
             {"role": "system", "content": STRATEGY_SYSTEM_PROMPT},
-            {"role": "user", "content": comp_prompt}
-        ])
-        first_line = comp.splitlines()[0] if comp else ""
-        agent_list = [n.strip() for n in first_line.split(",") if n.strip()][:5]
+            {"role": "user",
+             "content": (
+                 f"For VALORANT map '{map_choice}' at {site_choice.lower()} site on the "
+                 f"{side_choice.lower()} side with {economy_choice.lower()} economy and a round goal of "
+                 f"{round_goal}, propose a balanced team of five agents, at least one Controller. "
+                 "List only the agent names separated by commas."
+             )}
+        ]
+        comp_res = generate_valorant_strategy(prompt)
+        agent_list = [a.strip() for a in comp_res.split(",")]
     else:
-        if not agent_choice:
-            return "❌ Please select at least one agent."
-        if len(agent_choice) > 5:
-            return "❌ Please select no more than 5 agents."
         agent_list = agent_choice
 
-    user_prompt = (
-        f"on the {side_choice.lower()} side {map_choice} at {site_choice.lower()} site with {economy_choice.lower()} economy "
-        f"with a round goal of {round_goal}, generate a {playstyle_choice.lower()} strategy "
-        f"using {', '.join(agent_list)}"
-    )
-
-    agent_info = []
-    for agent in agent_list:
-        data = fetch_agent_data(agent)
-        if data:
-            agent_info.append(f"{agent} (Role: {data['role']}): {data['description']}")
-        else:
-            agent_info.append(f"{agent}: No reference info found.")
-
+    # Build the main strategy prompt
     messages = [
         {"role": "system", "content": STRATEGY_SYSTEM_PROMPT},
-        {"role": "system", "content": "Use the following agent reference info:\n" + "\n".join(agent_info)},
-        {"role": "user", "content": user_prompt}
+        {"role": "user",
+         "content": (
+             f"On the {side_choice.lower()} side of {map_choice} at {site_choice.lower()} site "
+             f"with a {economy_choice.lower()} economy and a round goal of {round_goal}, "
+             f"generate a {playstyle_choice.lower()} strategy using agents: {', '.join(agent_list)}."
+         )}
     ]
+
     return generate_valorant_strategy(messages)
 
-# Build Gradio UI with Valorant-themed styling
+
 css = """
 :root {
-    --valorant-red: #FF4655;
-    --valorant-black: #0C0C0C;
-    --valorant-gray: #1F1F1F;
-    --valorant-white: #EDEDED;
+    --valorant-white: #ffffff;
 }
 
+/* Default (dark mode) styling */
 .gradio-container {
     background-image: url('https://path.to/valorant-background.jpg');
     background-size: cover;
     background-position: center;
     padding: 30px;
 }
-
 .gradio-blocks {
     backdrop-filter: blur(8px);
 }
-
 #header-title {
     text-align: center;
     color: var(--valorant-white);
@@ -163,41 +111,27 @@ css = """
     margin-bottom: 10px;
     text-shadow: 3px 3px 10px rgba(0, 0, 0, 0.9);
 }
-
 #subtext {
     text-align: center;
     color: var(--valorant-white);
     font-size: 1em;
     margin-bottom: 20px;
 }
-
 .section {
     background-color: rgba(15, 15, 15, 0.85);
     padding: 20px;
-    border-radius: 14px;
-    margin-bottom: 24px;
-    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.7);
+    border-radius: 8px;
+    margin-bottom: 20px;
 }
-
 .section-title {
-    font-size: 1.6em;
+    font-size: 1.2em;
     font-weight: 700;
-    margin-bottom: 12px;
-    color: var(--valorant-red);
-    text-shadow: 2px 2px 6px rgba(0, 0, 0, 0.8);
-}
-
-.section label {
-    font-size: 1.1em;
-    font-weight: 600;
+    margin-bottom: 10px;
     color: var(--valorant-white);
 }
-
 #generate-btn {
-    background-color: var(--valorant-red);
-    color: var(--valorant-white);
-    border: none;
-    border-radius: 10px;
+    background-color: #FF4655;
+    color: white;
     padding: 12px 24px;
     font-weight: 700;
     box-shadow: 0 3px 8px rgba(0, 0, 0, 0.6);
@@ -207,56 +141,112 @@ css = """
     background-color: #E8434C;
 }
 
+/* Light mode overrides */
+@media (prefers-color-scheme: light) {
+    #header-title,
+    #subtext,
+    .section-title {
+        color: #000000;
+        text-shadow: 3px 3px 10px rgba(255, 255, 255, 0.7);
+    }
+    .section {
+        background-color: rgba(255, 255, 255, 0.85);
+    }
+}
 """
 
 with gr.Blocks(css=css, title="VALORANT Strategy Generator") as ui:
     gr.HTML("<h1 id='header-title'>VALORANT Strategy Generator</h1>")
-    gr.HTML("<div id='subtext'>This strategy generator is intended to provide users a quick and easy way to play the game intentionally by generating strategies on the fly adapting to any possible in-game scenario.</div>")
-    gr.HTML("<div id='subtext'>To use, simply use the option boxes to specify your in-game scenario and click 'Generate Strategy'. Note: Results are AI generated and can vary.</div>")
+    gr.HTML("<div id='subtext'>Dynamic, AI-powered tactics on the fly adapting to any in-game scenario.</div>")
+    gr.HTML("<div id='subtext'>Use the options below and click 'Generate Strategy'. Note: Results are AI generated and can vary.</div>")
 
     with gr.Column(elem_classes="section"):
         gr.HTML('<div class="section-title">Setup & Goals</div>')
         with gr.Row():
-            map_choice = gr.Dropdown(label="Select Map",
-                                     choices=["Ascent", "Bind", "Haven", "Lotus", "Split", "Sunset", "Breeze", "Icebox", "Pearl", "Fracture"],
-                                     value="Ascent")
-            side_choice = gr.Radio(label="Side",
-                                   choices=["Attack", "Defense"], value="Attack")
-            round_goal = gr.Radio(label="Round Goal",
-                                   choices=["play off bomb", "play for picks"], value="play off bomb")
-            site_choice = gr.Radio(label="Site",
-                                   choices=["A Site", "B Site"], value="A Site")
-            economy_choice = gr.Radio(label="Economy Type",
-                                      choices=["Eco", "Half-buy", "Full-buy"], value="Full-buy")
-            auto_comp = gr.Checkbox(label="Auto-generate Team Composition",
-                                    info="Let the model pick a balanced 5-agent team based on map and site.", value=False)
+            map_choice = gr.Dropdown(
+                label="Select Map",
+                choices=["Ascent", "Abyss", "Bind", "Breeze", "Fracture", "Haven", "Icebox", "Lotus", "Pearl", "Split", "Sunset"],
+                value="Ascent"
+            )
+            side_choice = gr.Radio(label="Side", choices=["Attack", "Defense"], value="Attack")
+            round_goal = gr.Radio(
+                label="Round Goal",
+                choices=["Play off bomb", "Play for picks"],
+                value="Play off bomb"
+            )
+            site_choice = gr.Radio(
+                label="Site",
+                choices=["A Site", "B Site"],
+                value="A Site"
+            )
+            # Dynamically include C Site for Haven and Lotus maps
+            map_choice.change(
+                fn=lambda m: gr.update(
+                    choices=(['A Site', 'B Site', 'C Site'] if m in ['Haven', 'Lotus'] else ['A Site', 'B Site']),
+                    value='A Site'
+                ),
+                inputs=[map_choice],
+                outputs=[site_choice]
+            )
+            economy_choice = gr.Radio(
+                label="Economy Type",
+                choices=["Eco", "Half-buy", "Full-buy"],
+                value="Full-buy"
+            )
+            auto_comp = gr.Checkbox(
+                label="Auto-generate Team Composition",
+                info="Let the model pick a balanced 5-agent team based on map and site.",
+                value=False
+            )
 
     with gr.Column(elem_classes="section"):
         gr.HTML('<div class="section-title">Agents & Playstyle</div>')
         with gr.Row():
-            playstyle_choice = gr.Radio(label="Preferred Playstyle",
-                                        choices=["Default", "Aggressive", "Control", "Lurk-heavy", "Execute-heavy"],
-                                        value="Default")
-            agent_choice = gr.CheckboxGroup(label="Select Agents (up to 5)",
-                                            choices=["Astra", "Breach", "Brimstone", "Chamber", "Clove", "Cypher", "Deadlock", "Fade", "Gekko", "Harbor",
-                                                     "Iso", "Jett", "KAY/O", "Killjoy", "Neon", "Omen", "Phoenix", "Raze", "Reyna", "Sage", "Sova", "Skye",
-                                                     "Tejo", "Viper", "Waylay", "Yoru", "Vyse"],
-                                            value=["Jett", "Phoenix"])
+            playstyle_choice = gr.Radio(
+                label="Preferred Playstyle",
+                choices=["Default", "Aggressive", "Control", "Lurk-heavy", "Execute-heavy"],
+                value="Default"
+            )
+            agent_choice = gr.CheckboxGroup(
+                label="Select Agents (up to 5)",
+                choices=[
+                    "Astra", "Breach", "Brimstone", "Chamber", "Clove", "Cypher", "Deadlock", "Fade",
+                    "Gekko", "Harbor", "Iso", "Jett", "Kay/o", "Killjoy", "Omen", "Phoenix", "Raze",
+                    "Reyna", "Sage", "Sova", "Skye", "Tejo", "Viper", "Waylay", "Yoru", "Vyse"
+                ],
+                value=["Jett", "Phoenix"]
+            )
 
-    side_choice.change(fn=lambda side: gr.update(choices=["play off bomb", "play for picks"] if side=="Attack" else ["retake","stall the plant","run them down"],
-                                                 value=("play off bomb" if side=="Attack" else "retake")),
-                       inputs=[side_choice], outputs=[round_goal])
-    auto_comp.change(fn=lambda auto: gr.update(visible=False, value=[]) if auto else gr.update(visible=True),
-                     inputs=[auto_comp], outputs=[agent_choice])
+    # Update round goal label when side changes
+    side_choice.change(
+        fn=lambda side: gr.update(
+            choices=["Play off bomb", "Play for picks"] if side == "Attack" else ["Retake", "Stall the plant", "Run them down"],
+            value=("Play off bomb" if side == "Attack" else "Retake")
+        ),
+        inputs=[side_choice],
+        outputs=[round_goal]
+    )
 
-    # Strategy output with copy button
-    strategy_output = gr.Textbox(label="Strategy Output", lines=20, interactive=False,
-                                 elem_classes="section", show_copy_button=True)
+    auto_comp.change(
+        fn=lambda auto: gr.update(visible=False, value=[]) if auto else gr.update(visible=True),
+        inputs=[auto_comp],
+        outputs=[agent_choice]
+    )
+
+    strategy_output = gr.Textbox(
+        label="Strategy Output",
+        lines=20,
+        interactive=False,
+        elem_classes="section",
+        show_copy_button=True
+    )
     generate_btn = gr.Button("Generate Strategy", elem_id="generate-btn")
 
-    generate_btn.click(on_click_strategy,
-                       inputs=[map_choice, side_choice, round_goal, site_choice, economy_choice, playstyle_choice, agent_choice, auto_comp],
-                       outputs=[strategy_output])
+    generate_btn.click(
+        on_click_strategy,
+        inputs=[map_choice, side_choice, round_goal, site_choice, economy_choice, playstyle_choice, agent_choice, auto_comp],
+        outputs=[strategy_output]
+    )
 
 if __name__ == "__main__":
     ui.launch(share=True)

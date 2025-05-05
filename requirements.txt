@@ -1,5 +1,3 @@
 openai
 gradio
-serpapi
-newspaper3k
 requests
