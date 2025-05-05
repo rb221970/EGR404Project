@@ -1,0 +1,11 @@
+# Secrets
+config.py
+key.txt
+
+# Bytecode
+__pycache__/
+*.pyc
+
+# Local data / temp
+/mnt/data/
+temp*.txt
