@@ -10,7 +10,7 @@ Riot Games API (Riot Developer Portal) for player stats and agent data, LLMs for
 
 ### Deliverables
 At the start of this project, I planned to show demonstrations of this tool in real time as well as my gathered user experiences. The rough timeline was as follows:
-1.	Gathering successful strategies from my resources (YouTube, Reddit, VALOPLANT [https://valoplant.gg/])
+1.	Gathering successful strategies from my resources (YouTube, Reddit, [VALOPLANT](https://valoplant.gg/]))
 2.	Making a prototype
 3.	Testing with agents from known successful strategies to test for similarities, differences, innovation, and ability to adjust and/or adapt 
 4.	Reaching out to users to test for functionality, correctness
