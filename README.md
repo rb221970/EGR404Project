@@ -1,6 +1,6 @@
 # EGR404Project
 
-## [Crafting VALORANT Strategies with AI.](https://0136002086eb6ecf5f.gradio.live) 
+## [Crafting VALORANT Strategies with AI.](https://huggingface.co/spaces/raymondbrown/404final)
 
 ### Description 
 An AI-powered tool that generates custom team based strategies in the free-to-play video game known as VALORANT that are both map and agent specific and can adapt to the desired playstyle. The community that surrounds VALORANT is both lively and extremely competitive, yet there are little to no tools that provide such functionality other than generic guides from the internet (usually YouTube). While it is a niche idea, it is something highly valuable to this community that requires little knowledge and/or effort to use. 
