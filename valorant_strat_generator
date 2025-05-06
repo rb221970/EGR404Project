@@ -13,10 +13,52 @@ STRATEGY_SYSTEM_PROMPT = (
     "focus on actionable plays, specific callouts, and step-by-step plans."
 )
 
-# API endpoint for agent details
+# API endpoints for agent and map details
 VALORANT_AGENTS_API = "https://valorant-api.com/v1/agents?isPlayableCharacter=true"
-WIKI_API_URL = "https://en.wikipedia.org/w/api.php"
+VALORANT_MAPS_API = "https://valorant-api.com/v1/maps"
 
+# Allowed Valorant maps in your UI
+ALLOWED_MAPS = [
+    "Ascent", "Abyss", "Bind", "Breeze", "Fracture",
+    "Haven", "Icebox", "Lotus", "Pearl", "Split", "Sunset"
+]
+
+# Fetch playable agents at startup (fallback to a minimal list if it fails)
+try:
+    agents_resp = requests.get(VALORANT_AGENTS_API).json()
+    AGENT_NAMES = [
+        a["displayName"]
+        for a in agents_resp.get("data", [])
+        if a.get("isPlayableCharacter", False)
+    ]
+    if not AGENT_NAMES:
+        raise ValueError("No agents fetched")
+except Exception:
+    AGENT_NAMES = [
+        "Astra", "Breach", "Brimstone", "Chamber", "Clove", "Cypher", "Deadlock", "Fade",
+        "Gekko", "Harbor", "Iso", "Jett", "Kay/o", "Killjoy", "Omen", "Phoenix", "Raze",
+        "Reyna", "Sage", "Sova", "Skye", "Tejo", "Viper", "Waylay", "Yoru", "Vyse"
+    ]
+
+# Fetch map data at startup, but only keep the allowed ones
+try:
+    maps_resp = requests.get(VALORANT_MAPS_API).json().get("data", [])
+    # build a dict of map displayName -> full map object
+    MAP_DATA = {
+        m["displayName"]: m
+        for m in maps_resp
+        if m.get("displayName") in ALLOWED_MAPS
+    }
+    # list of names for the dropdown
+    MAP_NAMES = list(MAP_DATA.keys())
+    if not MAP_NAMES:
+        raise ValueError("No allowed maps fetched from API")
+except Exception:
+    # fallback if API fails
+    MAP_DATA = {name: {"callouts": []} for name in ALLOWED_MAPS}
+    MAP_NAMES = ALLOWED_MAPS
+
+WIKI_API_URL = "https://en.wikipedia.org/w/api.php"
 
 def fetch_agent_wiki(agent_name):
     """
@@ -38,7 +80,6 @@ def fetch_agent_wiki(agent_name):
     except Exception:
         return ""
 
-
 def generate_valorant_strategy(messages, model="gpt-4"):
     try:
         res = openai.ChatCompletion.create(
@@ -51,42 +92,67 @@ def generate_valorant_strategy(messages, model="gpt-4"):
     except Exception as e:
         return f"❌ ERROR generating strategy: {e}"
 
-
 def on_click_strategy(map_choice, side_choice, round_goal, site_choice,
                       economy_choice, playstyle_choice, agent_choice, auto_comp):
     """
-    Builds the prompt, fetches agent info (API + fallback), and generates a strategy.
+    Builds the prompt, fetches agent info (API + fallback), generates a strategy,
+    and validates that any callouts mentioned actually exist on the chosen map.
     """
-    # Fetch agent list or auto-generate composition
+    # Determine agents
     if auto_comp:
-        prompt = [
+        comp_prompt = [
             {"role": "system", "content": STRATEGY_SYSTEM_PROMPT},
-            {"role": "user",
-             "content": (
-                 f"For VALORANT map '{map_choice}' at {site_choice.lower()} site on the "
-                 f"{side_choice.lower()} side with {economy_choice.lower()} economy and a round goal of "
-                 f"{round_goal}, propose a balanced team of five agents, at least one Controller. "
-                 "List only the agent names separated by commas."
-             )}
+            {"role": "user", "content": (
+                f"For VALORANT map '{map_choice}' at {site_choice.lower()} site on the "
+                f"{side_choice.lower()} side with {economy_choice.lower()} economy and a round goal of "
+                f"{round_goal}, propose a balanced team of five agents, at least one Controller. "
+                "List only the agent names separated by commas."
+            )}
         ]
-        comp_res = generate_valorant_strategy(prompt)
+        comp_res = generate_valorant_strategy(comp_prompt)
         agent_list = [a.strip() for a in comp_res.split(",")]
     else:
         agent_list = agent_choice
 
-    # Build the main strategy prompt
+    # Build initial strategy prompt
+    user_content = (
+        f"On the {side_choice.lower()} side of {map_choice} at {site_choice.lower()} site "
+        f"with a {economy_choice.lower()} economy and a round goal of {round_goal}, "
+        f"generate a {playstyle_choice.lower()} strategy using agents: {', '.join(agent_list)}."
+    )
     messages = [
         {"role": "system", "content": STRATEGY_SYSTEM_PROMPT},
-        {"role": "user",
-         "content": (
-             f"On the {side_choice.lower()} side of {map_choice} at {site_choice.lower()} site "
-             f"with a {economy_choice.lower()} economy and a round goal of {round_goal}, "
-             f"generate a {playstyle_choice.lower()} strategy using agents: {', '.join(agent_list)}."
-         )}
+        {"role": "user",   "content": user_content}
     ]
 
-    return generate_valorant_strategy(messages)
+    # First pass
+    strategy = generate_valorant_strategy(messages)
 
+    # Validate callouts
+    all_callouts = {
+        callout.get("regionName")
+        for m in MAP_DATA.values()
+        for callout in m.get("callouts", [])
+        if callout.get("regionName")
+    }
+    allowed = {
+        callout.get("regionName")
+        for callout in MAP_DATA.get(map_choice, {}).get("callouts", [])
+        if callout.get("regionName")
+    }
+    used = {c for c in all_callouts if c and c in strategy}
+    invalid = used - allowed
+
+    if invalid:
+        correction = (
+            f"Your strategy mentioned callouts not on {map_choice}: {', '.join(invalid)}. "
+            f"Only use these callouts for {map_choice}: {', '.join(sorted(allowed))}. "
+            "Please regenerate the full strategy."
+        )
+        messages.append({"role": "user", "content": correction})
+        strategy = generate_valorant_strategy(messages)
+
+    return strategy
 
 css = """
 :root {
@@ -165,8 +231,8 @@ with gr.Blocks(css=css, title="VALORANT Strategy Generator") as ui:
         with gr.Row():
             map_choice = gr.Dropdown(
                 label="Select Map",
-                choices=["Ascent", "Abyss", "Bind", "Breeze", "Fracture", "Haven", "Icebox", "Lotus", "Pearl", "Split", "Sunset"],
-                value="Ascent"
+                choices=MAP_NAMES,
+                value=MAP_NAMES[0]
             )
             side_choice = gr.Radio(label="Side", choices=["Attack", "Defense"], value="Attack")
             round_goal = gr.Radio(
@@ -179,7 +245,6 @@ with gr.Blocks(css=css, title="VALORANT Strategy Generator") as ui:
                 choices=["A Site", "B Site"],
                 value="A Site"
             )
-            # Dynamically include C Site for Haven and Lotus maps
             map_choice.change(
                 fn=lambda m: gr.update(
                     choices=(['A Site', 'B Site', 'C Site'] if m in ['Haven', 'Lotus'] else ['A Site', 'B Site']),
@@ -209,15 +274,10 @@ with gr.Blocks(css=css, title="VALORANT Strategy Generator") as ui:
             )
             agent_choice = gr.CheckboxGroup(
                 label="Select Agents (up to 5)",
-                choices=[
-                    "Astra", "Breach", "Brimstone", "Chamber", "Clove", "Cypher", "Deadlock", "Fade",
-                    "Gekko", "Harbor", "Iso", "Jett", "Kay/o", "Killjoy", "Omen", "Phoenix", "Raze",
-                    "Reyna", "Sage", "Sova", "Skye", "Tejo", "Viper", "Waylay", "Yoru", "Vyse"
-                ],
+                choices=AGENT_NAMES,
                 value=["Jett", "Phoenix"]
             )
 
-    # Update round goal label when side changes
     side_choice.change(
         fn=lambda side: gr.update(
             choices=["Play off bomb", "Play for picks"] if side == "Attack" else ["Retake", "Stall the plant", "Run them down"],
